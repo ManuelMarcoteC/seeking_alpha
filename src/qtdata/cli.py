@@ -216,6 +216,87 @@ def news_curate() -> None:
     )
 
 
+@news_app.command("score")
+def news_score(
+    batch_size: int = typer.Option(32, help="FinBERT batch size"),
+    limit: int = typer.Option(None, help="Max rows this run (checkpoint lever)"),
+) -> None:
+    """Score curated headlines with the pinned FinBERT revision."""
+    from qtdata.news.scoring import score_pending
+
+    settings = get_settings()
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        try:
+            n = score_pending(settings, cat, batch_size=batch_size, limit=limit)
+        except ImportError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+    console.print(f"[green]FinBERT scored {n} rows.[/green]")
+
+
+@news_app.command("build-factor")
+def news_build_factor(
+    since: str = typer.Option(None, help="Only rebuild (ticker, day) rows from this ISO date"),
+) -> None:
+    """(Re)build the daily sentiment factor `sentiment_daily`."""
+    from qtdata.news.aggregate import build_sentiment_daily
+
+    settings = get_settings()
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        n = build_sentiment_daily(
+            settings, cat, since=date.fromisoformat(since) if since else None
+        )
+    console.print(f"[green]sentiment_daily: {n} (ticker, day) rows upserted.[/green]")
+
+
+@news_app.command("update")
+def news_update(
+    universe: str = typer.Option(None, help="Universe for the harvest; default from settings"),
+    skip_firehose: bool = typer.Option(False, help="Skip the Alpha Vantage firehose"),
+    skip_score: bool = typer.Option(False, help="Skip FinBERT scoring"),
+) -> None:
+    """Daily news loop: firehose + harvest -> curate -> score -> factor."""
+    from qtdata.news.aggregate import build_sentiment_daily
+    from qtdata.news.curate import curate_news
+    from qtdata.news.ingest import ingest_news
+    from qtdata.news.scoring import score_pending
+
+    settings = get_settings()
+    symbols = _resolve_tickers(settings, None, universe or settings.default_universe)
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        if skip_firehose or settings.alpha_vantage_api_key is None:
+            if not skip_firehose:
+                console.print(
+                    "[yellow]No QT_ALPHA_VANTAGE_API_KEY — skipping firehose.[/yellow]"
+                )
+        else:
+            _print_ingest_summary(
+                ingest_news(settings, cat, provider_name="alpha_vantage_news")
+            )
+        _print_ingest_summary(
+            ingest_news(settings, cat, provider_name="yfinance_news", tickers=symbols)
+        )
+        summary = curate_news(settings, cat)
+        console.print(
+            f"news: files={summary.files_processed} rows={summary.rows_upserted} "
+            f"quarantined={summary.rows_quarantined}"
+        )
+        if not skip_score:
+            try:
+                n = score_pending(settings, cat)
+                console.print(f"FinBERT scored {n} rows")
+            except ImportError:
+                console.print(
+                    "[yellow]FinBERT extras not installed — scores stay pending "
+                    "(pip install -r requirements-sentiment.txt).[/yellow]"
+                )
+        n = build_sentiment_daily(settings, cat)
+    console.print(f"[green]sentiment_daily: {n} (ticker, day) rows upserted.[/green]")
+
+
 @app.command()
 def curate(
     tickers: str = typer.Option(None, help="Limit to comma-separated tickers"),

@@ -1,0 +1,5 @@
+# Optional FinBERT sentiment extras (`qt news score`). CPU-only torch, ~2 GB on disk.
+# The extra index serves CPU wheels on Linux; on Windows the default PyPI wheel is CPU-only.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch~=2.6
+transformers~=4.49
