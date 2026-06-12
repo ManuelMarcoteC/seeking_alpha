@@ -106,14 +106,39 @@ def curate_corporate_actions(
 
 
 def curate_ohlcv(
-    settings: Settings, catalog: Catalog, tickers: list[str] | None = None
+    settings: Settings,
+    catalog: Catalog,
+    tickers: list[str] | None = None,
+    chunk_tickers: int = 200,
 ) -> CurationSummary:
+    """Promote raw OHLCV in ticker-chunks so a full-universe backfill stays in memory.
+
+    The curated_files ledger makes each chunk independently resumable.
+    """
     run_id = uuid4().hex[:12]
     summary = CurationSummary(run_id=run_id)
     files = _uncurated_files(settings, catalog, Dataset.OHLCV_DAILY, tickers)
     if not files:
         return summary
 
+    by_ticker: dict[str, list[Path]] = {}
+    for f in files:
+        by_ticker.setdefault(f.parent.name, []).append(f)
+    ticker_dirs = sorted(by_ticker)
+    for i in range(0, len(ticker_dirs), max(chunk_tickers, 1)):
+        chunk_files = [f for t in ticker_dirs[i : i + chunk_tickers] for f in by_ticker[t]]
+        _curate_ohlcv_files(settings, catalog, chunk_files, run_id, summary)
+    summary.tickers = sorted(set(summary.tickers))
+    return summary
+
+
+def _curate_ohlcv_files(
+    settings: Settings,
+    catalog: Catalog,
+    files: list[Path],
+    run_id: str,
+    summary: CurationSummary,
+) -> None:
     raw = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
     df = _normalize_ohlcv(raw)
     df = (
@@ -127,9 +152,9 @@ def curate_ohlcv(
         logger.warning("All %d rows quarantined; nothing promoted", len(df))
         for f in files:
             catalog.mark_file_curated(f)
-        summary.files_processed = len(files)
-        summary.rows_quarantined = len(df)
-        return summary
+        summary.files_processed += len(files)
+        summary.rows_quarantined += len(df)
+        return
 
     out = valid.copy()
     out["volume"] = out["volume"].astype("int64")
@@ -140,8 +165,7 @@ def curate_ohlcv(
 
     affected = sorted(out["ticker"].unique())
 
-    # Re-derive adjustment factors and anomaly flags over the FULL curated series
-    # of the affected tickers (detectors need history, not just the increment).
+    # Adjustment factors need the FULL curated series (suffix products span history).
     curated = parquet_store.read(
         settings.curated_dir / "ohlcv_daily", filters=[("ticker", "in", affected)]
     )
@@ -156,19 +180,26 @@ def curate_ohlcv(
             factors, settings.curated_dir / "adjustment_factors", FACTORS_KEY, partition_col="year"
         )
 
-    flags = run_detectors(curated, actions, settings)
+    # Detectors use trailing windows only, so a trailing slice flags the new rows
+    # identically to a full-history pass (old flags persist in validation_flags).
+    # This keeps daily incremental runs cheap at full-NASDAQ scale; `qt validate`
+    # remains the full-history mode.
+    detector_window = max(settings.mad_window * 4, 260)
+    detector_df = (
+        curated.sort_values(["ticker", "date"]).groupby("ticker").tail(detector_window)
+    )
+    flags = run_detectors(detector_df, actions, settings)
     report = ValidationReport(run_id=run_id, flags=flags, quarantined=failures)
     persist_report(report, settings)
 
     for f in files:
         catalog.mark_file_curated(f)
 
-    summary.files_processed = len(files)
-    summary.rows_upserted = res.rows_written
-    summary.rows_quarantined = len(failures["index"].unique()) if not failures.empty else 0
-    summary.flags_written = len(flags)
-    summary.tickers = affected
-    return summary
+    summary.files_processed += len(files)
+    summary.rows_upserted += res.rows_written
+    summary.rows_quarantined += len(failures["index"].unique()) if not failures.empty else 0
+    summary.flags_written += len(flags)
+    summary.tickers.extend(affected)
 
 
 def curate_all(

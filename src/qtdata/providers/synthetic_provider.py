@@ -13,6 +13,7 @@ incremental ingestion testable offline.
 from __future__ import annotations
 
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -155,6 +156,22 @@ class SyntheticProvider:
         s, e = pd.Timestamp(start), pd.Timestamp(end)
         df = path[(path["date"] >= s) & (path["date"] <= e)].reset_index(drop=True)
         return make_fetch_result(df, self.name, Dataset.OHLCV_DAILY, ticker, start, end)
+
+    def fetch_batch(
+        self, tickers: Sequence[str], start: date, end: date
+    ) -> dict[str, dict[Dataset, FetchResult]]:
+        """Batch capability mirror — lets the batched ingest path run fully offline."""
+        out: dict[str, dict[Dataset, FetchResult]] = {}
+        for ticker in tickers:
+            ohlcv = self.fetch_ohlcv(ticker, start, end)
+            actions = self.fetch_corporate_actions(ticker, start, end)
+            if ohlcv.df.empty and actions.df.empty:
+                continue
+            out[ticker] = {
+                Dataset.OHLCV_DAILY: ohlcv,
+                Dataset.CORPORATE_ACTIONS: actions,
+            }
+        return out
 
     def fetch_corporate_actions(self, ticker: str, start: date, end: date) -> FetchResult:
         rows = []

@@ -13,6 +13,9 @@ from enum import StrEnum
 class Dataset(StrEnum):
     OHLCV_DAILY = "ohlcv_daily"
     CORPORATE_ACTIONS = "corporate_actions"
+    NEWS = "news"
+    LISTING_DIRECTORY = "listing_directory"
+    FUNDAMENTALS_SNAPSHOT = "fundamentals_snapshot"
 
 
 class ActionType(StrEnum):
@@ -32,6 +35,11 @@ ACTIONS_KEY = ["ticker", "ex_date", "action_type"]
 FLAGS_KEY = ["ticker", "date", "flag_type"]
 UNIVERSE_KEY = ["index_name", "ticker", "effective_from"]
 FACTORS_KEY = ["ticker", "date"]
+LISTING_KEY = ["as_of", "ticker"]
+FUNDAMENTALS_KEY = ["as_of", "ticker"]
+NEWS_ARTICLES_KEY = ["article_id"]
+NEWS_TICKER_KEY = ["article_id", "ticker"]
+SENTIMENT_DAILY_KEY = ["ticker", "date"]
 
 # Canonical column order
 OHLCV_COLUMNS = [

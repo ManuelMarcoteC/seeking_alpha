@@ -38,6 +38,42 @@ OHLCV_SCHEMA = pa.DataFrameSchema(
     coerce=True,
 )
 
+NEWS_ARTICLES_SCHEMA = pa.DataFrameSchema(
+    columns={
+        "article_id": pa.Column(str, pa.Check.str_matches(r"^[0-9a-f]{64}$")),
+        "published_at": pa.Column(pd.DatetimeTZDtype(tz="UTC")),
+        "ingested_at": pa.Column(pd.DatetimeTZDtype(tz="UTC")),
+        "source": pa.Column(str, nullable=True),
+        "provider": pa.Column(str),
+        "title": pa.Column(str),
+        "summary": pa.Column(str, nullable=True),
+        "url": pa.Column(str),
+        "overall_sentiment_score": pa.Column(
+            float, pa.Check.in_range(-1.0, 1.0), nullable=True
+        ),
+        "run_id": pa.Column(str),
+    },
+    unique=["article_id"],
+    coerce=True,
+)
+
+NEWS_TICKER_SCHEMA = pa.DataFrameSchema(
+    columns={
+        "article_id": pa.Column(str, pa.Check.str_matches(r"^[0-9a-f]{64}$")),
+        "ticker": pa.Column(str, pa.Check.str_length(1, 6)),
+        "published_at": pa.Column(pd.DatetimeTZDtype(tz="UTC")),
+        "ingested_at": pa.Column(pd.DatetimeTZDtype(tz="UTC")),
+        "relevance": pa.Column(float, pa.Check.in_range(0.0, 1.0), nullable=True),
+        "score_av": pa.Column(float, pa.Check.in_range(-1.0, 1.0), nullable=True),
+        "score_finbert": pa.Column(float, pa.Check.in_range(-1.0, 1.0), nullable=True),
+        "finbert_revision": pa.Column(str, nullable=True),
+        "scored_at": pa.Column(pd.DatetimeTZDtype(tz="UTC"), nullable=True),
+        "run_id": pa.Column(str),
+    },
+    unique=["article_id", "ticker"],
+    coerce=True,
+)
+
 ACTIONS_SCHEMA = pa.DataFrameSchema(
     columns={
         "ticker": pa.Column(str),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Protocol, runtime_checkable
@@ -56,6 +57,19 @@ class DataProviderProtocol(Protocol):
     def fetch_corporate_actions(self, ticker: str, start: date, end: date) -> FetchResult: ...
 
     def supported_datasets(self) -> frozenset[Dataset]: ...
+
+
+@runtime_checkable
+class BatchFetchProtocol(Protocol):
+    """Optional capability: fetch many tickers (all supported datasets) in one pass.
+
+    Returns one entry per ticker that yielded data; tickers that failed or came
+    back empty are simply absent (the caller records them as 'empty').
+    """
+
+    def fetch_batch(
+        self, tickers: Sequence[str], start: date, end: date
+    ) -> dict[str, dict[Dataset, FetchResult]]: ...
 
 
 class RateLimiter:

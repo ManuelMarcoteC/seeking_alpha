@@ -51,6 +51,11 @@ _CURATED_TABLES = {
     "universe_membership": False,
     "validation_flags": True,
     "adjustment_factors": True,
+    "listing_directory": True,
+    "fundamentals_snapshot": False,
+    "news_articles": True,
+    "news_ticker_sentiment": True,
+    "sentiment_daily": True,
 }
 
 
@@ -65,7 +70,10 @@ class Catalog:
         self.conn.execute(_SCHEMA)
 
     def close(self) -> None:
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:  # noqa: BLE001 — double-close is a no-op
+            pass
 
     def __enter__(self) -> Catalog:
         return self
@@ -124,6 +132,50 @@ class Catalog:
                 """
             )
             created.append("ohlcv_daily_adj")
+
+        if {"sentiment_daily", "ohlcv_daily"} <= available:
+            # decayed carry-forward factor, derived on read (never materialized):
+            # last observed sentiment per ticker decayed by exp(-days_since/tau)
+            tau = float(self.settings.news_decay_tau_days)
+            self.conn.execute(
+                f"""
+                CREATE OR REPLACE VIEW sentiment_daily_decayed AS
+                WITH spine AS (
+                    SELECT DISTINCT o.ticker, o.date
+                    FROM ohlcv_daily o
+                ),
+                joined AS (
+                    SELECT s.ticker, s.date,
+                           sd.sent_av, sd.sent_finbert, sd.n_articles,
+                           CASE WHEN sd.ticker IS NOT NULL THEN s.date END AS obs_date
+                    FROM spine s
+                    LEFT JOIN sentiment_daily sd USING (ticker, date)
+                ),
+                filled AS (
+                    SELECT *,
+                           MAX(obs_date) OVER (
+                               PARTITION BY ticker ORDER BY date
+                               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                           ) AS last_obs_date,
+                           LAST_VALUE(sent_av IGNORE NULLS) OVER (
+                               PARTITION BY ticker ORDER BY date
+                               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                           ) AS last_sent_av,
+                           LAST_VALUE(sent_finbert IGNORE NULLS) OVER (
+                               PARTITION BY ticker ORDER BY date
+                               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                           ) AS last_sent_finbert
+                    FROM joined
+                )
+                SELECT ticker, date, sent_av, sent_finbert, n_articles,
+                       last_sent_av * exp(-date_diff('day', last_obs_date, date) / {tau})
+                           AS sent_av_decayed,
+                       last_sent_finbert * exp(-date_diff('day', last_obs_date, date) / {tau})
+                           AS sent_finbert_decayed
+                FROM filled
+                """
+            )
+            created.append("sentiment_daily_decayed")
 
         if {"ohlcv_daily", "validation_flags"} <= available:
             self.conn.execute(

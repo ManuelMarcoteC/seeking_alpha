@@ -10,6 +10,7 @@ source and reconcile against a second provider before trusting it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, timedelta
 
 import pandas as pd
@@ -64,6 +65,8 @@ class YFinanceProvider:
 
     def __init__(self, settings: Settings):
         self._limiter = RateLimiter(settings.yfinance_rate_limit_per_min)
+        self._batch_size = max(settings.yfinance_batch_size, 0)
+        self._batch_threads = settings.yfinance_batch_threads
 
     def supported_datasets(self) -> frozenset[Dataset]:
         return frozenset({Dataset.OHLCV_DAILY, Dataset.CORPORATE_ACTIONS})
@@ -87,3 +90,51 @@ class YFinanceProvider:
     def fetch_corporate_actions(self, ticker: str, start: date, end: date) -> FetchResult:
         df = normalize_history_actions(self._history(ticker, start, end), ticker)
         return make_fetch_result(df, self.name, Dataset.CORPORATE_ACTIONS, ticker, start, end)
+
+    # -- batch path (one yf.download serves OHLCV + corporate actions) ---------
+    @retry_transient
+    def _download_chunk(self, tickers: list[str], start: date, end: date) -> pd.DataFrame:
+        self._limiter.acquire()
+        return yf.download(
+            tickers,
+            start=start,
+            end=end + timedelta(days=1),
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            actions=True,
+            threads=self._batch_threads,
+            progress=False,
+        )
+
+    def fetch_batch(
+        self, tickers: Sequence[str], start: date, end: date
+    ) -> dict[str, dict[Dataset, FetchResult]]:
+        size = self._batch_size if self._batch_size > 1 else len(tickers)
+        out: dict[str, dict[Dataset, FetchResult]] = {}
+        symbols = [t.upper() for t in tickers]
+        for i in range(0, len(symbols), size):
+            chunk = symbols[i : i + size]
+            frame = self._download_chunk(chunk, start, end)
+            if frame is None or frame.empty:
+                continue
+            for ticker in chunk:
+                if isinstance(frame.columns, pd.MultiIndex):
+                    if ticker not in frame.columns.get_level_values(0):
+                        continue
+                    sub = frame[ticker]
+                else:  # single-ticker chunk returns flat columns
+                    sub = frame
+                ohlcv = normalize_history_ohlcv(sub, ticker)
+                actions = normalize_history_actions(sub, ticker)
+                if ohlcv.empty and actions.empty:
+                    continue
+                out[ticker] = {
+                    Dataset.OHLCV_DAILY: make_fetch_result(
+                        ohlcv, self.name, Dataset.OHLCV_DAILY, ticker, start, end
+                    ),
+                    Dataset.CORPORATE_ACTIONS: make_fetch_result(
+                        actions, self.name, Dataset.CORPORATE_ACTIONS, ticker, start, end
+                    ),
+                }
+        return out

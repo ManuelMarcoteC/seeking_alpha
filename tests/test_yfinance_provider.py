@@ -71,6 +71,61 @@ def test_provider_uses_unadjusted_history(monkeypatch, tmp_path):
     assert len(result.df) == 5
 
 
+def test_fetch_batch_slices_multiindex_download(monkeypatch, tmp_path):
+    """yf.download multi-ticker frame -> per-ticker FetchResults for both datasets."""
+    vendor = _vendor_frame()
+    multi = pd.concat({"AAPL": vendor, "MSFT": vendor * 1.01}, axis=1)
+    captured = {}
+
+    def fake_download(tickers, **kwargs):
+        captured["tickers"] = list(tickers)
+        captured.update(kwargs)
+        return multi
+
+    monkeypatch.setattr("qtdata.providers.yfinance_provider.yf.download", fake_download)
+    provider = YFinanceProvider(Settings(data_dir=tmp_path, _env_file=None))
+    out = provider.fetch_batch(["AAPL", "MSFT"], date(2024, 1, 2), date(2024, 1, 8))
+
+    assert captured["auto_adjust"] is False
+    assert captured["actions"] is True
+    assert captured["group_by"] == "ticker"
+    assert set(out) == {"AAPL", "MSFT"}
+    ohlcv = out["AAPL"][Dataset.OHLCV_DAILY].df
+    assert len(ohlcv) == 5
+    assert (ohlcv["ticker"] == "AAPL").all()
+    actions = out["AAPL"][Dataset.CORPORATE_ACTIONS].df
+    assert set(actions["action_type"]) == {"dividend", "split"}
+
+
+def test_fetch_batch_skips_all_nan_ticker(monkeypatch, tmp_path):
+    vendor = _vendor_frame()
+    dead = vendor.astype("float64") * float("nan")
+    multi = pd.concat({"AAPL": vendor, "DEAD": dead}, axis=1)
+    monkeypatch.setattr(
+        "qtdata.providers.yfinance_provider.yf.download", lambda tickers, **kw: multi
+    )
+    provider = YFinanceProvider(Settings(data_dir=tmp_path, _env_file=None))
+    out = provider.fetch_batch(["AAPL", "DEAD"], date(2024, 1, 2), date(2024, 1, 8))
+    assert "AAPL" in out
+    assert "DEAD" not in out  # NaN columns = yf.download's silent failure signal
+
+
+def test_fetch_batch_chunks_by_batch_size(monkeypatch, tmp_path):
+    calls = []
+    vendor = _vendor_frame()
+
+    def fake_download(tickers, **kwargs):
+        calls.append(list(tickers))
+        return pd.concat({t: vendor for t in tickers}, axis=1)
+
+    monkeypatch.setattr("qtdata.providers.yfinance_provider.yf.download", fake_download)
+    settings = Settings(data_dir=tmp_path, yfinance_batch_size=2, _env_file=None)
+    provider = YFinanceProvider(settings)
+    out = provider.fetch_batch(["A", "B", "C", "D", "E"], date(2024, 1, 2), date(2024, 1, 8))
+    assert [len(c) for c in calls] == [2, 2, 1]
+    assert len(out) == 5
+
+
 @pytest.mark.live
 def test_live_smoke_aapl(tmp_path):
     provider = YFinanceProvider(Settings(data_dir=tmp_path, _env_file=None))
