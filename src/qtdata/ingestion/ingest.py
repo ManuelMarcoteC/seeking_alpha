@@ -215,7 +215,7 @@ def _ingest_batched(
         signature = tuple(sorted((str(ds), es) for ds, es in per_dataset.items()))
         groups[signature].append(ticker)
 
-    for signature, tickers in groups.items():
+    for tickers in groups.values():
         per_dataset = plan[tickers[0]]
         batch_start = min(per_dataset.values())
         started_at = datetime.now(UTC)
