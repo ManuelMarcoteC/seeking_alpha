@@ -1,5 +1,7 @@
 venv/
 __pycache__/
+# vendored webinar assets (contains a real .env key + 12MB CSV) — never track
+Webinar_Agentes/
 *.py[cod]
 *.egg-info/
 .env
