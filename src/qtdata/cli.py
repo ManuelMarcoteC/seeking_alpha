@@ -27,6 +27,8 @@ news_app = typer.Typer(help="News & sentiment pipeline")
 app.add_typer(news_app, name="news")
 fundamentals_app = typer.Typer(help="Fundamentals snapshots (static, survivorship-biased)")
 app.add_typer(fundamentals_app, name="fundamentals")
+agent_app = typer.Typer(help="LLM agent layer (read-only SQL, never price predictions)")
+app.add_typer(agent_app, name="agent")
 
 console = Console()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -368,6 +370,79 @@ def validate(
         f"[green]{len(flags)} flags written; report: "
         f"{settings.reports_dir / f'validation_{run_id}.md'}[/green]"
     )
+
+
+def _require_anthropic_key(settings: Settings) -> None:
+    import os
+
+    if settings.anthropic_api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
+        console.print(
+            "[red]No Anthropic key — set QT_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY).[/red]"
+        )
+        raise typer.Exit(1)
+
+
+@agent_app.command("screener")
+def agent_screener(
+    mandate: str = typer.Argument(..., help="Natural-language screening mandate"),
+    max_rounds: int = typer.Option(None, help="SQL exploration round cap"),
+    review: bool = typer.Option(True, "--review/--no-review", help="Independent reviewer pass"),
+    reports: bool = typer.Option(False, help="Also write a one-pager per candidate"),
+) -> None:
+    """Run the screener agent: mandate -> SQL loop -> reviewed, verified proposal."""
+    from qtdata.agents.report import generate_report, persist_screener_result
+    from qtdata.agents.screener import run_screener
+
+    settings = get_settings()
+    _require_anthropic_key(settings)
+    result = run_screener(settings, mandate, max_rounds=max_rounds, review_enabled=review)
+
+    console.print(f"[bold]Estado:[/bold] {result.status} (rondas SQL: {result.rounds})")
+    if result.refusal:
+        console.print(f"[yellow]El agente se negó: {result.refusal}[/yellow]")
+    if result.proposal is not None:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ticker")
+        table.add_column("tesis")
+        for c in result.proposal.candidates:
+            table.add_row(c.ticker, c.thesis)
+        console.print(table)
+        if result.review is not None:
+            verdict = "[green]PASS[/green]" if result.review.pass_ else "[red]FAIL[/red]"
+            console.print(f"Revisor: {verdict} {result.review.issues or ''}")
+        if result.verification is not None:
+            console.print(result.verification.render())
+    if result.usage is not None:
+        console.print(f"[dim]{result.usage.summary_line(settings.agent_model)}[/dim]")
+
+    out = persist_screener_result(result, settings)
+    console.print(f"Informe: {out}")
+
+    if reports and result.proposal is not None:
+        import duckdb
+
+        for c in result.proposal.candidates:
+            try:
+                path = generate_report(settings, c.ticker)
+                console.print(f"  one-pager: {path}")
+            except (ValueError, duckdb.Error) as exc:
+                console.print(f"  [yellow]{c.ticker}: {exc}[/yellow]")
+
+
+@agent_app.command("report")
+def agent_report(ticker: str = typer.Argument(..., help="Ticker in fundamentals_snapshot")) -> None:
+    """One-pager report for a ticker (works keyless — LLM section omitted)."""
+    import duckdb
+
+    from qtdata.agents.report import generate_report
+
+    settings = get_settings()
+    try:
+        out = generate_report(settings, ticker)
+    except (ValueError, duckdb.Error) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Informe: {out}[/green]")
 
 
 @app.command()

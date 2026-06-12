@@ -1,0 +1,2 @@
+# Optional agent layer (`qt agent ...`): Anthropic SDK
+anthropic>=0.92,<1.0
