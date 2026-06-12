@@ -25,6 +25,8 @@ universe_app = typer.Typer(help="Point-in-time universe management")
 app.add_typer(universe_app, name="universe")
 news_app = typer.Typer(help="News & sentiment pipeline")
 app.add_typer(news_app, name="news")
+fundamentals_app = typer.Typer(help="Fundamentals snapshots (static, survivorship-biased)")
+app.add_typer(fundamentals_app, name="fundamentals")
 
 console = Console()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -317,6 +319,25 @@ def curate(
         f"ohlcv:   files={ohlcv_summary.files_processed} rows={ohlcv_summary.rows_upserted} "
         f"quarantined={ohlcv_summary.rows_quarantined} flags={ohlcv_summary.flags_written}"
     )
+
+
+@fundamentals_app.command("ingest")
+def fundamentals_ingest(
+    csv: Path = typer.Argument(..., help="stockanalysis.com screener export (CSV)"),
+    as_of: str = typer.Option(None, help="ISO snapshot date; default = today"),
+) -> None:
+    """Load a screener CSV into curated fundamentals_snapshot (agent/research use only)."""
+    from qtdata.fundamentals import SNAPSHOT_NOTE, ingest_screener_csv
+
+    settings = get_settings()
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        n = ingest_screener_csv(
+            settings, cat, csv,
+            as_of=date.fromisoformat(as_of) if as_of else date.today(),
+        )
+    console.print(f"[green]fundamentals_snapshot: {n} tickers ingested.[/green]")
+    console.print(f"[yellow]{SNAPSHOT_NOTE}[/yellow]")
 
 
 @app.command()
