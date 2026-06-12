@@ -1,0 +1,13 @@
+{
+  "comment": "Recorded vendor-shaped yfinance Ticker.history payload (auto_adjust=False, actions=True). Dividend/split rows are synthetic markers used to exercise the actions extraction path.",
+  "index": ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"],
+  "data": {
+    "Open":   [187.15, 184.22, 182.15, 181.99, 182.09],
+    "High":   [188.44, 185.88, 183.09, 182.76, 185.60],
+    "Low":    [183.89, 183.43, 180.88, 180.17, 181.50],
+    "Close":  [185.64, 184.25, 181.91, 181.18, 185.56],
+    "Volume": [82488700, 58414500, 71983600, 62303300, 59144500],
+    "Dividends":    [0.0, 0.0, 0.0, 0.25, 0.0],
+    "Stock Splits": [0.0, 0.0, 0.0, 0.0, 4.0]
+  }
+}

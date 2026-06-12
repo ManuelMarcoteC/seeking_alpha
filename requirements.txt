@@ -1,0 +1,14 @@
+pandas~=2.2
+numpy~=2.1
+pyarrow~=19.0
+duckdb~=1.2
+yfinance~=0.2.55
+pydantic~=2.10
+pydantic-settings~=2.8
+pandera~=0.23
+exchange-calendars~=4.8
+typer~=0.15
+tenacity~=9.0
+rich~=13.9
+requests~=2.32
+python-dotenv~=1.0

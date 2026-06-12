@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qtdata"
+version = "0.1.0"
+description = "Quantitative data pipeline: provider-agnostic ingestion, medallion storage, flag-never-mutate validation"
+requires-python = ">=3.12,<3.13"
+
+[project.scripts]
+qt = "qtdata.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not live' -q"
+markers = [
+    "live: tests that hit real external APIs (deselected by default)",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
