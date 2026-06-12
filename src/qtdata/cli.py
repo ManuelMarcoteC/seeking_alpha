@@ -29,6 +29,8 @@ fundamentals_app = typer.Typer(help="Fundamentals snapshots (static, survivorshi
 app.add_typer(fundamentals_app, name="fundamentals")
 agent_app = typer.Typer(help="LLM agent layer (read-only SQL, never price predictions)")
 app.add_typer(agent_app, name="agent")
+research_app = typer.Typer(help="Quantitative research / factor validation")
+app.add_typer(research_app, name="research")
 
 console = Console()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -509,6 +511,56 @@ def query(
         console.print(f"... {len(df) - 50} more rows (use --out to export)")
 
 
+@research_app.command("sentiment-ic")
+def research_sentiment_ic(
+    horizons: str = typer.Option("1,5,20", help="Comma-separated forward horizons (sessions)"),
+    score: str = typer.Option("sent_finbert", help="sent_finbert | sent_av"),
+    min_breadth: int = typer.Option(10, help="Min names per day for a cross-sectional IC"),
+    event_threshold: float = typer.Option(0.5, help="|score| threshold for the event study"),
+    min_articles: int = typer.Option(3, help="Min articles behind an event day"),
+    start: str = typer.Option(None, help="ISO date — factor sample start"),
+    end: str = typer.Option(None, help="ISO date — factor sample end"),
+) -> None:
+    """Validate the sentiment factor: Spearman IC, decay curve, event study."""
+    from qtdata.research.sentiment_validation import run_sentiment_validation
+
+    settings = get_settings()
+    hz = tuple(int(t.strip()) for t in horizons.split(",") if t.strip())
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        cat.refresh_views()
+        try:
+            report = run_sentiment_validation(
+                settings,
+                cat,
+                horizons=hz,
+                score_col=score,
+                min_breadth=min_breadth,
+                event_threshold=event_threshold,
+                min_articles=min_articles,
+                start=date.fromisoformat(start) if start else None,
+                end=date.fromisoformat(end) if end else None,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+
+    table = Table(show_header=True, header_style="bold")
+    for col in ("horizonte", "n días", "IC medio", "t-stat", "ICIR", "hit rate"):
+        table.add_column(col)
+    for s in report.ic:
+        table.add_row(
+            str(s.horizon), str(s.n_days), f"{s.mean_ic:.4f}",
+            f"{s.t_stat:.2f}", f"{s.icir:.2f}", f"{s.hit_rate:.2f}",
+        )
+    console.print(table)
+    if report.events is not None:
+        console.print(
+            f"Event study: {report.events.n_pos} eventos +, {report.events.n_neg} eventos −"
+        )
+    console.print(f"[green]Informe: {report.path}[/green]")
+
+
 @app.command()
 def status() -> None:
     """Watermarks, recent ingestion runs and flag counts."""
@@ -543,14 +595,14 @@ def status() -> None:
 
 @app.command()
 def update(
-    universe: str = typer.Option("SP500"),
+    universe: str = typer.Option(None, help="Universe to update; default from settings"),
     provider: str = typer.Option(None),
 ) -> None:
     """Convenience daily loop: ingest -> curate -> refresh views for a universe."""
     from qtdata.curation.curate import curate_all
 
     settings = get_settings()
-    symbols = _resolve_tickers(settings, None, universe)
+    symbols = _resolve_tickers(settings, None, universe or settings.default_universe)
     with Catalog(settings) as cat:
         cat.init_schema()
         summary = run_ingest(settings, cat, symbols, provider_name=provider)
