@@ -23,6 +23,8 @@ from qtdata.storage.catalog import Catalog
 app = typer.Typer(no_args_is_help=True, help="Quantitative data pipeline")
 universe_app = typer.Typer(help="Point-in-time universe management")
 app.add_typer(universe_app, name="universe")
+news_app = typer.Typer(help="News & sentiment pipeline")
+app.add_typer(news_app, name="news")
 
 console = Console()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -152,6 +154,66 @@ def ingest(
             full_refresh=full_refresh,
         )
     _print_ingest_summary(summary)
+
+
+@news_app.command("ingest")
+def news_ingest(
+    provider: str = typer.Option(
+        "alpha_vantage_news", help="alpha_vantage_news | yfinance_news"
+    ),
+    date_from: str = typer.Option(
+        None, "--from", help="ISO date (firehose); default = watermark + 1 day"
+    ),
+    date_to: str = typer.Option(
+        None, "--to", help="ISO date (firehose); default = last completed session"
+    ),
+    tickers: str = typer.Option(None, help="Comma-separated tickers (yfinance_news)"),
+    universe: str = typer.Option(None, help="Use members of this universe (yfinance_news)"),
+) -> None:
+    """Fetch news into the immutable raw layer (firehose or per-ticker harvest)."""
+    from qtdata.models import ProviderNotConfiguredError
+    from qtdata.news.ingest import ingest_news
+
+    settings = get_settings()
+    symbols = None
+    if provider == "yfinance_news":
+        symbols = _resolve_tickers(settings, tickers, universe)
+    elif provider == "alpha_vantage_news" and settings.alpha_vantage_api_key is None:
+        console.print(
+            "[red]alpha_vantage_news requires QT_ALPHA_VANTAGE_API_KEY "
+            "(free tier: 25 req/day, ~1 firehose day per calendar day).[/red]"
+        )
+        raise typer.Exit(1)
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        try:
+            summary = ingest_news(
+                settings,
+                cat,
+                date_from=date.fromisoformat(date_from) if date_from else None,
+                date_to=date.fromisoformat(date_to) if date_to else None,
+                provider_name=provider,
+                tickers=symbols,
+            )
+        except ProviderNotConfiguredError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+    _print_ingest_summary(summary)
+
+
+@news_app.command("curate")
+def news_curate() -> None:
+    """Promote raw news to curated news_articles + news_ticker_sentiment."""
+    from qtdata.news.curate import curate_news
+
+    settings = get_settings()
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        summary = curate_news(settings, cat)
+    console.print(
+        f"news: files={summary.files_processed} rows={summary.rows_upserted} "
+        f"quarantined={summary.rows_quarantined}"
+    )
 
 
 @app.command()

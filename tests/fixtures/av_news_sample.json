@@ -1,0 +1,54 @@
+{
+  "items": "3",
+  "sentiment_score_definition": "x <= -0.35: Bearish; -0.35 < x <= -0.15: Somewhat-Bearish; -0.15 < x < 0.15: Neutral; 0.15 <= x < 0.35: Somewhat_Bullish; x >= 0.35: Bullish",
+  "relevance_score_definition": "0 < x <= 1, with a higher score indicating higher relevance.",
+  "feed": [
+    {
+      "title": "Apple unveils new AI features as services revenue hits record",
+      "url": "https://example.com/news/apple-ai-services-record",
+      "time_published": "20260610T143000",
+      "authors": ["Jane Reporter"],
+      "summary": "Apple announced new on-device AI features while services revenue reached an all-time high.",
+      "source": "Example Newswire",
+      "category_within_source": "Technology",
+      "source_domain": "example.com",
+      "topics": [{"topic": "Technology", "relevance_score": "0.9"}],
+      "overall_sentiment_score": 0.31,
+      "overall_sentiment_label": "Somewhat-Bullish",
+      "ticker_sentiment": [
+        {"ticker": "AAPL", "relevance_score": "0.85", "ticker_sentiment_score": "0.42", "ticker_sentiment_label": "Bullish"},
+        {"ticker": "MSFT", "relevance_score": "0.12", "ticker_sentiment_score": "0.05", "ticker_sentiment_label": "Neutral"}
+      ]
+    },
+    {
+      "title": "Chipmaker NVDA faces export restrictions scrutiny",
+      "url": "https://example.com/news/nvda-export-scrutiny",
+      "time_published": "20260610T203500",
+      "authors": [],
+      "summary": "Regulators are reviewing export licenses affecting data-center GPU sales.",
+      "source": "Example Times",
+      "category_within_source": "Markets",
+      "source_domain": "example.com",
+      "topics": [{"topic": "Technology", "relevance_score": "0.7"}],
+      "overall_sentiment_score": -0.28,
+      "overall_sentiment_label": "Somewhat-Bearish",
+      "ticker_sentiment": [
+        {"ticker": "NVDA", "relevance_score": "0.91", "ticker_sentiment_score": "-0.35", "ticker_sentiment_label": "Bearish"}
+      ]
+    },
+    {
+      "title": "Macro outlook: Fed minutes point to steady rates",
+      "url": "https://example.com/news/fed-minutes-steady",
+      "time_published": "20260610T180000",
+      "authors": ["Macro Desk"],
+      "summary": "Minutes showed broad agreement to hold rates steady through summer.",
+      "source": "Example Wire",
+      "category_within_source": "Economy",
+      "source_domain": "example.com",
+      "topics": [{"topic": "Economy - Monetary", "relevance_score": "0.95"}],
+      "overall_sentiment_score": 0.05,
+      "overall_sentiment_label": "Neutral",
+      "ticker_sentiment": []
+    }
+  ]
+}
