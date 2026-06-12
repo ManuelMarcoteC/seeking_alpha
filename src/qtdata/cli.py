@@ -97,6 +97,35 @@ def universe_seed(index: str = typer.Option("SP500", help="Index to seed")) -> N
     console.print(f"[yellow]{BIAS_NOTE}[/yellow]")
 
 
+@universe_app.command("refresh")
+def universe_refresh(
+    index: str = typer.Option("NASDAQ", help="Universe to refresh"),
+    as_of: str = typer.Option(None, help="ISO date; default = today"),
+) -> None:
+    """Refresh membership from the NASDAQ symbol directory (forward point-in-time)."""
+    from qtdata.nasdaq_directory import INITIAL_SNAPSHOT_NOTE, refresh_nasdaq
+
+    settings = get_settings()
+    summary = refresh_nasdaq(
+        settings,
+        as_of=date.fromisoformat(as_of) if as_of else None,
+        index_name=index,
+    )
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        cat.refresh_views()
+    console.print(
+        f"directory rows={summary.directory_rows} common stocks={summary.common_stocks}"
+    )
+    console.print(
+        f"[green]{index} as of {summary.as_of}: +{len(summary.added)} / "
+        f"-{len(summary.removed)} (unchanged {summary.unchanged})[/green]"
+    )
+    # added-only with nothing pre-existing == the very first snapshot
+    if summary.added and not summary.removed and summary.unchanged == 0:
+        console.print(f"[yellow]{INITIAL_SNAPSHOT_NOTE}[/yellow]")
+
+
 @app.command()
 def ingest(
     tickers: str = typer.Option(None, help="Comma-separated tickers"),
