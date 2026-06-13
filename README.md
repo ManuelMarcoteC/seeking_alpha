@@ -130,6 +130,34 @@ numeric spot-checks). Output includes the token/cost line; the full case persist
 (works keyless — the LLM judgment section is simply omitted). The agent **never**
 gives price targets or buy/sell calls; mandates demanding them are refused.
 
+### Agent billing via Claude subscription (optional)
+
+By default the agent authenticates with an API key (`QT_ANTHROPIC_API_KEY` or
+`ANTHROPIC_API_KEY`), billed pay-per-token. Alternatively it can bill against a
+**Claude Pro/Max subscription** by reusing the OAuth token the official Claude
+Code CLI already stores — no API key, no per-token charge.
+
+```powershell
+claude auth login --claudeai          # one-time: authenticate the Claude Code CLI
+# then in .env:
+QT_AGENT_USE_SUBSCRIPTION=true
+```
+
+How it works: `src/qtdata/agents/claude_subscription.py` reads the OAuth token
+from `~/.claude/.credentials.json` (refreshing it if expired), authenticates the
+Anthropic SDK with a bearer token, and rewrites each request to pass Anthropic's
+first-party validator — a signed `x-anthropic-billing-header`, the Claude Code
+identity system prompt (other system text relocated into the first user message
+as `<system-reminder>` blocks), Stainless SDK fingerprint headers, the OAuth
+beta flags, and `metadata.user_id`. Unlike a generic agent shim it **does not**
+rename the tools (`run_sql`, `submit_proposal`, `refuse` stay literal, so
+verification still resolves them) and it patches nothing — transforms are
+applied to the request kwargs inside `LLMClient`.
+
+This reuses subscription credentials outside the official CLI; it tracks
+Anthropic's current OAuth contract and may break if they rotate it. Use at your
+own risk. Override the credentials location with `QT_AGENT_CREDENTIALS_PATH`.
+
 ## Known biases (read before backtesting)
 
 - `fundamentals_snapshot` is current-constituents-only: survivorship-biased, never a
