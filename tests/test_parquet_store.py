@@ -97,3 +97,67 @@ def test_upsert_empty_frame_is_noop(tmp_path):
     res = parquet_store.upsert(pd.DataFrame(), tmp_path / "t", ["ticker"])
     assert res.rows_written == 0
     assert not (tmp_path / "t").exists()
+
+
+def test_read_unifies_null_and_string_columns_across_partitions(tmp_path):
+    """Regression: a column that is all-null in one partition (Arrow ``null``)
+    and string in another must read back without ArrowNotImplementedError."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table_dir = tmp_path / "news"
+    # Partition 2025: the column has a concrete string value.
+    p25 = table_dir / "year=2025"
+    p25.mkdir(parents=True)
+    pq.write_table(
+        pa.table({"article_id": ["a"], "finbert_revision": ["rev123"]}),
+        p25 / "part-0.parquet",
+    )
+    # Partition 2026: the column is entirely null -> stored as Arrow ``null``.
+    p26 = table_dir / "year=2026"
+    p26.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {"article_id": ["b"], "finbert_revision": pa.array([None], type=pa.null())}
+        ),
+        p26 / "part-0.parquet",
+    )
+
+    out = parquet_store.read(table_dir)
+    assert len(out) == 2
+    revs = set(out["finbert_revision"].dropna())
+    assert revs == {"rev123"}
+    assert out["finbert_revision"].isna().sum() == 1
+
+
+def test_read_unifies_mixed_timestamp_precision(tmp_path):
+    """Partitions with ns vs us timestamp precision must read back unified."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table_dir = tmp_path / "t"
+    pa_ns = pa.array([pd.Timestamp("2025-01-01", tz="UTC")], type=pa.timestamp("ns", "UTC"))
+    pa_us = pa.array([pd.Timestamp("2026-01-01", tz="UTC")], type=pa.timestamp("us", "UTC"))
+    (table_dir / "year=2025").mkdir(parents=True)
+    (table_dir / "year=2026").mkdir(parents=True)
+    pq.write_table(
+        pa.table({"id": ["a"], "scored_at": pa_ns}),
+        table_dir / "year=2025" / "part-0.parquet",
+    )
+    pq.write_table(
+        pa.table({"id": ["b"], "scored_at": pa_us}),
+        table_dir / "year=2026" / "part-0.parquet",
+    )
+
+    out = parquet_store.read(table_dir)
+    assert len(out) == 2
+    assert pd.api.types.is_datetime64_any_dtype(out["scored_at"])
+
+
+def test_read_with_filters_still_works(tmp_path):
+    df = make_ohlcv(n=10)
+    df["year"] = df["date"].dt.year
+    parquet_store.upsert(df, tmp_path / "t", ["ticker", "date"], partition_col="year")
+    out = parquet_store.read(tmp_path / "t", filters=[("ticker", "=", df.loc[0, "ticker"])])
+    assert len(out) == 10
+    assert (out["ticker"] == df.loc[0, "ticker"]).all()
