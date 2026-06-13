@@ -107,7 +107,7 @@ def seed_universe(
     return res.rows_written
 
 
-def members_as_of(settings: Settings, d: date, index_name: str = "SP500") -> list[str]:
+def members_as_of(settings: Settings, d: date, index_name: str = "NASDAQ") -> list[str]:
     df = parquet_store.read(settings.curated_dir / _TABLE)
     if df.empty:
         return []

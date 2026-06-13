@@ -1,6 +1,6 @@
 """qt — command-line entry point for the pipeline.
 
-Daily loop: `qt ingest --universe SP500` -> `qt curate` (or just `qt update`).
+Daily loop: `qt ingest --universe NASDAQ` -> `qt curate` (or just `qt update`).
 """
 
 from __future__ import annotations
@@ -377,9 +377,24 @@ def validate(
 def _require_anthropic_key(settings: Settings) -> None:
     import os
 
+    # The subscription (OAuth) path provides its own credentials — no API key needed.
+    if settings.agent_use_subscription:
+        from qtdata.agents.claude_subscription import (
+            SubscriptionAuthError,
+            get_access_token,
+        )
+
+        try:
+            get_access_token(settings.agent_credentials_path, allow_refresh=False)
+        except SubscriptionAuthError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        return
+
     if settings.anthropic_api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
         console.print(
-            "[red]No Anthropic key — set QT_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY).[/red]"
+            "[red]No Anthropic key — set QT_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY), "
+            "or enable QT_AGENT_USE_SUBSCRIPTION to bill a Claude subscription.[/red]"
         )
         raise typer.Exit(1)
 

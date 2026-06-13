@@ -29,6 +29,10 @@ class Settings(BaseSettings):
 
     # agent layer
     anthropic_api_key: SecretStr | None = None  # falls back to ANTHROPIC_API_KEY
+    # Bill the agent against a Claude Pro/Max subscription (OAuth) instead of a
+    # pay-per-token API key. Reuses the token the official Claude Code CLI stores.
+    agent_use_subscription: bool = False
+    agent_credentials_path: str = "~/.claude/.credentials.json"
     agent_model: str = "claude-opus-4-8"
     agent_max_rounds: int = 6
     agent_sql_row_cap: int = 50

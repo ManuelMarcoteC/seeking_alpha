@@ -16,7 +16,7 @@ def test_seed_and_members_as_of(settings):
     today = date(2026, 6, 12)
     n = seed_universe(settings, as_of=today)
     assert n == len(SP500_SEED)
-    members = members_as_of(settings, today)
+    members = members_as_of(settings, today, index_name="SP500")
     assert "AAPL" in members
     assert len(members) == len(SP500_SEED)
 
@@ -25,7 +25,7 @@ def test_membership_is_not_backdated(settings):
     """The biased seed is effective only FROM the seed date — never before."""
     seed_day = date(2026, 6, 12)
     seed_universe(settings, as_of=seed_day)
-    assert members_as_of(settings, seed_day - timedelta(days=1)) == []
+    assert members_as_of(settings, seed_day - timedelta(days=1), index_name="SP500") == []
 
 
 def test_bias_note_recorded_in_table(settings):

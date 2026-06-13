@@ -65,19 +65,35 @@ class LLMClient:
     @property
     def client(self) -> object:
         if self._client is None:
-            import anthropic  # lazy: agents are optional at runtime
+            if self.settings.agent_use_subscription:
+                # Claude Pro/Max subscription via OAuth — no API key needed.
+                from qtdata.agents.claude_subscription import build_subscription_client
 
-            key = self.settings.anthropic_api_key
-            self._client = anthropic.Anthropic(
-                api_key=key.get_secret_value() if key else None  # None -> env var
-            )
+                self._client = build_subscription_client(
+                    self.settings.agent_credentials_path
+                )
+            else:
+                import anthropic  # lazy: agents are optional at runtime
+
+                key = self.settings.anthropic_api_key
+                self._client = anthropic.Anthropic(
+                    api_key=key.get_secret_value() if key else None  # None -> env var
+                )
         return self._client
+
+    def _prepare(self, kwargs: dict) -> dict:
+        """Apply subscription OAuth transforms when billing the Claude plan."""
+        if self.settings.agent_use_subscription:
+            from qtdata.agents.claude_subscription import apply_subscription_transforms
+
+            apply_subscription_transforms(kwargs)
+        return kwargs
 
     def create(self, **kwargs):
         kwargs.setdefault("model", self.model)
         kwargs.setdefault("max_tokens", 16000)
         kwargs.setdefault("thinking", {"type": "adaptive"})
-        response = self.client.messages.create(**kwargs)
+        response = self.client.messages.create(**self._prepare(kwargs))
         self.meter.add(getattr(response, "usage", None))
         return response
 
@@ -85,6 +101,6 @@ class LLMClient:
         kwargs.setdefault("model", self.model)
         kwargs.setdefault("max_tokens", 4000)
         kwargs.setdefault("thinking", {"type": "adaptive"})
-        response = self.client.messages.parse(**kwargs)
+        response = self.client.messages.parse(**self._prepare(kwargs))
         self.meter.add(getattr(response, "usage", None))
         return response

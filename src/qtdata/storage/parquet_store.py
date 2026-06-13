@@ -93,7 +93,69 @@ def read(
     """Read a parquet table directory (hive partitions resolved automatically).
 
     Returns an empty DataFrame when the table does not exist yet.
+
+    Partitions written at different times can disagree on a column's Arrow type:
+    a column that is entirely null in one partition (e.g. ``finbert_revision``
+    before scoring) is stored as Arrow ``null``, while another partition stores
+    it as ``string``; mixing also happens with timestamp precision (``ns`` vs
+    ``us``). A naive concat then raises ``ArrowNotImplementedError: Unsupported
+    cast from string to null``. We unify the schema across all fragments before
+    reading so null-typed columns are promoted to their concrete type.
     """
+    import pyarrow as pa
+    import pyarrow.dataset as pds
+
     if not table_dir.exists() or not any(table_dir.rglob("*.parquet")):
         return pd.DataFrame()
-    return pd.read_parquet(table_dir, engine="pyarrow", columns=columns, filters=filters)
+
+    dataset = pds.dataset(table_dir, format="parquet", partitioning="hive")
+
+    # Unify per-fragment schemas, dropping pure-``null`` fields in favour of a
+    # concrete type from any other fragment; promote ``null`` -> that type.
+    fragment_schemas = [frag.physical_schema for frag in dataset.get_fragments()]
+    if fragment_schemas:
+        try:
+            unified = pa.unify_schemas(
+                [dataset.schema, *fragment_schemas], promote_options="permissive"
+            )
+            dataset = pds.dataset(
+                table_dir, format="parquet", partitioning="hive", schema=unified
+            )
+        except (pa.ArrowInvalid, pa.ArrowNotImplementedError, TypeError):
+            # Fall back to the dataset's own schema; the table() call below still
+            # benefits from Arrow's per-fragment casting where possible.
+            pass
+
+    table = dataset.to_table(columns=columns, filter=_build_filter(filters))
+    return table.to_pandas()
+
+
+def _build_filter(filters: list | None):
+    """Translate the legacy ``pd.read_parquet`` filter list into a pyarrow
+    dataset expression. ``None`` when no filters are supplied."""
+    if not filters:
+        return None
+    import operator
+
+    import pyarrow.dataset as pds
+
+    ops = {
+        "=": operator.eq,
+        "==": operator.eq,
+        "!=": operator.ne,
+        "<": operator.lt,
+        "<=": operator.le,
+        ">": operator.gt,
+        ">=": operator.ge,
+    }
+    expr = None
+    for col, op, val in filters:  # DNF single-conjunction form is all we use
+        field = pds.field(col)
+        if op in ("in", "not in"):
+            field_expr = field.isin(list(val))
+            if op == "not in":
+                field_expr = ~field_expr
+        else:
+            field_expr = ops[op](field, val)
+        expr = field_expr if expr is None else (expr & field_expr)
+    return expr
