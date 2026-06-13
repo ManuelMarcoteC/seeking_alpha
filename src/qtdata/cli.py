@@ -1,6 +1,6 @@
 """qt — command-line entry point for the pipeline.
 
-Daily loop: `qt ingest --universe SP500` -> `qt curate` (or just `qt update`).
+Daily loop: `qt ingest --universe NASDAQ` -> `qt curate` (or just `qt update`).
 """
 
 from __future__ import annotations
