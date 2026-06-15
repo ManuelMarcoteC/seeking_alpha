@@ -73,3 +73,37 @@ def test_dividend_with_no_prior_close_is_skipped():
         df, _actions([("TEST", before_history, "dividend", 1.0)])
     )
     assert np.allclose(factors["div_factor"], 1.0)
+
+
+def test_duplicate_split_same_ratio_is_deduped():
+    """Vendor (yfinance) emits the same split twice days apart (Samsung 2018 50:1).
+
+    Without dedup the factor compounds 50*50 = 2500x and corrupts all pre-split
+    adjusted prices. The two ex-dates within the window must collapse to a single
+    50x split anchored at the earliest ex-date.
+    """
+    df = make_ohlcv(n=60, with_lineage=False)
+    ex1 = df.loc[30, "date"]
+    ex2 = df.loc[38, "date"]  # ~8 sessions later, identical ratio
+    factors = compute_adjustment_factors(
+        df, _actions([("TEST", ex1, "split", 50.0), ("TEST", ex2, "split", 50.0)])
+    ).set_index("date")
+    # before the (single, earliest) split: exactly 1/50, never 1/2500
+    assert np.allclose(factors.loc[: ex1 - pd.Timedelta(days=1), "split_factor"], 1.0 / 50.0)
+    # from the earliest ex-date onward the split is already in the raw price
+    assert np.allclose(factors.loc[ex1:, "split_factor"], 1.0)
+
+
+def test_distinct_splits_same_ratio_far_apart_both_kept():
+    """Two legitimate identical-ratio splits outside the window must BOTH apply."""
+    df = make_ohlcv(n=120, with_lineage=False)
+    ex1 = df.loc[30, "date"]
+    ex2 = df.loc[90, "date"]  # months apart -> genuinely distinct events
+    factors = compute_adjustment_factors(
+        df, _actions([("TEST", ex1, "split", 2.0), ("TEST", ex2, "split", 2.0)])
+    ).set_index("date")
+    assert np.allclose(factors.loc[: ex1 - pd.Timedelta(days=1), "split_factor"], 0.25)
+    assert np.allclose(
+        factors.loc[ex1 : ex2 - pd.Timedelta(days=1), "split_factor"], 0.5
+    )
+    assert np.allclose(factors.loc[ex2:, "split_factor"], 1.0)
