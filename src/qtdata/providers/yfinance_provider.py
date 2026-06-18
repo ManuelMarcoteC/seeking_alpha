@@ -1,8 +1,18 @@
 """yfinance adapter.
 
-`auto_adjust=False` is load-bearing: the raw layer stores prices AS TRADED;
-adjustments are derived downstream from the corporate-actions table. Splits
-and dividends come from the same history call (`actions=True`).
+The raw layer's contract is AS TRADED: prices exactly as printed on the tape
+each day, with split discontinuities intact. Adjustments are derived downstream
+from the corporate-actions table (CRSP-style, ``ohlcv_daily_adj``).
+
+CAVEAT (load-bearing): ``auto_adjust=False`` only governs *dividends*. yfinance
+STILL returns split-back-adjusted Close/OHLC and split-inflated Volume — verified
+live (AAPL 2020-08-27 prints 125.01, the real as-traded close was 500.04; volume
+155.5M vs the real 38.9M, both off by the 4:1 ratio). Storing that vendor frame
+verbatim violates the as-traded contract and makes the downstream split factor
+apply the split a SECOND time. So we invert the vendor's split back-adjustment
+here, in the provider, via ``reconstruct_as_traded`` — the single place that
+touches the wire — keeping the raw layer honest and every downstream invariant
+(flag-never-mutate, adjusted-on-read) intact. Dividends are left untouched.
 
 yfinance scrapes Yahoo and breaks periodically — treat it as a prototyping
 source and reconcile against a second provider before trusting it.
@@ -13,14 +23,67 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
 from qtdata.config import Settings
+from qtdata.curation.adjustments import _dedup_splits
 from qtdata.models import ActionType, Dataset
 from qtdata.providers.base import FetchResult, RateLimiter, make_fetch_result, retry_transient
 
 _OHLCV_RENAME = {"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
+
+
+def reconstruct_as_traded(ohlcv: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
+    """Invert yfinance's split back-adjustment to recover AS-TRADED OHLCV.
+
+    yfinance returns Close/OHLC already divided by every split that occurred on
+    or after each row's date, and Volume multiplied by the same factor. To undo
+    it we compute, per row, ``future_mult = product of split ratios with ex_date
+    STRICTLY AFTER that date`` and multiply OHLC by it / divide Volume by it.
+
+    The split set is deduplicated with the SAME ``_dedup_splits`` guard the
+    downstream factor computation uses, so this un-adjust is the EXACT inverse of
+    ``adjustments.compute_adjustment_factors``' ``split_factor``. That lock-step
+    is what guarantees ``ohlcv_daily_adj`` re-derives the continuous vendor series
+    even for vendor-duplicated splits (e.g. Samsung's 50:1 emitted twice → a
+    single 50x here and a single 1/50 downstream cancel; a naive 2500x would not).
+
+    Exactness requires every split the vendor applied to be present in ``actions``
+    — true whenever the fetch window extends to the present, which holds for
+    watermark-forward incremental ingest and full backfills (the only paths that
+    write the lake). A partial historical window ending *before* an already-past
+    split is the one unsupported case; ingest never issues one.
+
+    Single-ticker frame in, single-ticker frame out (matches ``_dedup_splits``'
+    per-ticker assumption and the per-ticker call sites below).
+    """
+    if ohlcv.empty or actions is None or actions.empty:
+        return ohlcv
+    splits = actions[actions["action_type"] == ActionType.SPLIT.value]
+    splits = _dedup_splits(splits)
+    if splits.empty:
+        return ohlcv
+
+    ex = pd.to_datetime(splits["ex_date"]).to_numpy()
+    ratios = splits["value"].to_numpy(dtype=float)
+    order = np.argsort(ex)
+    ex_sorted, r_sorted = ex[order], ratios[order]
+    # suffix[i] = prod(r_sorted[i:]); suffix[len] = 1  (product of FUTURE splits)
+    suffix = np.ones(len(r_sorted) + 1)
+    suffix[:-1] = np.cumprod(r_sorted[::-1])[::-1]
+
+    df = ohlcv.copy()
+    dates = pd.to_datetime(df["date"]).to_numpy()
+    # side="right": a split on its own ex-date is already in the printed price
+    # (the row is post-split), so it must NOT be un-adjusted — mirrors the
+    # downstream split_factor convention (factor == 1 on/after the ex-date).
+    future_mult = suffix[np.searchsorted(ex_sorted, dates, side="right")]
+    for col in ("open", "high", "low", "close"):
+        df[col] = df[col].to_numpy(dtype=float) * future_mult
+    df["volume"] = np.round(df["volume"].to_numpy(dtype=float) / future_mult).astype("int64")
+    return df
 
 
 def normalize_history_ohlcv(hist: pd.DataFrame, ticker: str) -> pd.DataFrame:
@@ -84,8 +147,11 @@ class YFinanceProvider:
         )
 
     def fetch_ohlcv(self, ticker: str, start: date, end: date) -> FetchResult:
-        df = normalize_history_ohlcv(self._history(ticker, start, end), ticker)
-        return make_fetch_result(df, self.name, Dataset.OHLCV_DAILY, ticker, start, end)
+        frame = self._history(ticker, start, end)
+        ohlcv = normalize_history_ohlcv(frame, ticker)
+        actions = normalize_history_actions(frame, ticker)
+        ohlcv = reconstruct_as_traded(ohlcv, actions)
+        return make_fetch_result(ohlcv, self.name, Dataset.OHLCV_DAILY, ticker, start, end)
 
     def fetch_corporate_actions(self, ticker: str, start: date, end: date) -> FetchResult:
         df = normalize_history_actions(self._history(ticker, start, end), ticker)
@@ -129,6 +195,7 @@ class YFinanceProvider:
                 actions = normalize_history_actions(sub, ticker)
                 if ohlcv.empty and actions.empty:
                     continue
+                ohlcv = reconstruct_as_traded(ohlcv, actions)
                 out[ticker] = {
                     Dataset.OHLCV_DAILY: make_fetch_result(
                         ohlcv, self.name, Dataset.OHLCV_DAILY, ticker, start, end

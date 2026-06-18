@@ -22,6 +22,39 @@ logger = logging.getLogger(__name__)
 
 FACTOR_COLUMNS = ["ticker", "date", "split_factor", "div_factor", "adj_factor"]
 
+# Some vendors (notably yfinance) occasionally emit the SAME split twice within a
+# few sessions — e.g. Samsung's 50:1 split shows up on both 2018-05-04 and
+# 2018-05-16, which would compound the factor 50*50 = 2500x and corrupt every
+# pre-split adjusted price. A genuine repeat split of identical ratio days apart
+# does not happen, so we collapse same-ratio split clusters inside this window,
+# keeping the earliest ex-date. Raw stays untouched (flag-never-mutate): this is
+# a derivation-time guard, recomputed on every curation pass.
+SPLIT_DEDUP_WINDOW_DAYS = 20
+
+
+def _dedup_splits(splits: pd.DataFrame) -> pd.DataFrame:
+    """Drop vendor-duplicated splits: identical ratio within a short window."""
+    if splits.empty:
+        return splits
+    s = splits.copy()
+    s["ex_date"] = pd.to_datetime(s["ex_date"])
+    s = s.sort_values("ex_date")
+    keep_idx: list = []
+    last_kept_ex: dict[float, pd.Timestamp] = {}
+    for idx, row in s.iterrows():
+        val = float(row["value"])
+        ex = row["ex_date"]
+        prev = last_kept_ex.get(val)
+        if prev is not None and (ex - prev).days <= SPLIT_DEDUP_WINDOW_DAYS:
+            logger.warning(
+                "Duplicate split ratio %.4f for %s on %s (prev %s); ignoring duplicate",
+                val, row["ticker"], ex.date(), prev.date(),
+            )
+            continue
+        keep_idx.append(idx)
+        last_kept_ex[val] = ex
+    return s.loc[keep_idx]
+
 
 def _suffix_factor(dates: np.ndarray, ex_dates: np.ndarray, mults: np.ndarray) -> np.ndarray:
     """factor_t = product of mults for events with ex_date > t."""
@@ -59,6 +92,7 @@ def compute_adjustment_factors(ohlcv: pd.DataFrame, actions: pd.DataFrame) -> pd
 
         if not acts.empty:
             splits = acts[acts["action_type"] == ActionType.SPLIT.value]
+            splits = _dedup_splits(splits)
             if not splits.empty:
                 split_ex = pd.to_datetime(splits["ex_date"]).to_numpy()
                 split_mults = 1.0 / splits["value"].to_numpy(dtype=float)
