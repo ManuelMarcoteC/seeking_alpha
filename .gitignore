@@ -10,3 +10,5 @@ data/
 .ruff_cache/
 .coverage
 htmlcov/
+# loop working-state file (memory-loop pattern) — local, not a code artifact
+PROGRESS.md

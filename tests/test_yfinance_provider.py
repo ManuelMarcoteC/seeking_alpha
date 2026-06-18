@@ -2,18 +2,42 @@ import json
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from qtdata.config import Settings
+from qtdata.curation.adjustments import compute_adjustment_factors
 from qtdata.models import Dataset
 from qtdata.providers.yfinance_provider import (
     YFinanceProvider,
     normalize_history_actions,
     normalize_history_ohlcv,
+    reconstruct_as_traded,
 )
+from tests.conftest import make_ohlcv
 
 FIXTURE = Path(__file__).parent / "fixtures" / "yfinance_aapl_5d.json"
+
+
+def _actions(rows):
+    return pd.DataFrame(rows, columns=["ticker", "ex_date", "action_type", "value"])
+
+
+def _raw_ohlcv(dates, closes, ticker="TEST", volume=1_000_000):
+    """Minimal raw-shape OHLCV frame with OHLC all equal to close (easy asserts)."""
+    closes = np.asarray(closes, dtype=float)
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "date": pd.to_datetime(dates),
+            "open": closes,
+            "high": closes,
+            "low": closes,
+            "close": closes,
+            "volume": np.full(len(closes), volume, dtype="int64"),
+        }
+    )
 
 
 def _vendor_frame() -> pd.DataFrame:
@@ -132,3 +156,88 @@ def test_live_smoke_aapl(tmp_path):
     result = provider.fetch_ohlcv("AAPL", date(2024, 1, 2), date(2024, 1, 12))
     assert not result.df.empty
     assert (result.df["close"] > 0).all()
+
+
+# --- reconstruct_as_traded: invert yfinance's split back-adjustment ----------
+
+
+def test_reconstruct_no_splits_is_noop():
+    """A ticker with no splits (or only dividends) must pass through unchanged."""
+    dates = make_ohlcv(n=10, with_lineage=False)["date"]
+    closes = np.linspace(100.0, 110.0, 10)
+    ohlcv = _raw_ohlcv(dates, closes)
+    # only a dividend action -> reconstruct must NOT touch prices (splits only)
+    actions = _actions([("TEST", dates.iloc[3], "dividend", 1.5)])
+    out = reconstruct_as_traded(ohlcv, actions)
+    pd.testing.assert_frame_equal(out, ohlcv)
+
+
+def test_reconstruct_empty_inputs_pass_through():
+    dates = make_ohlcv(n=5, with_lineage=False)["date"]
+    ohlcv = _raw_ohlcv(dates, np.full(5, 100.0))
+    # no actions at all
+    pd.testing.assert_frame_equal(reconstruct_as_traded(ohlcv, _actions([])), ohlcv)
+    # empty ohlcv stays empty
+    assert reconstruct_as_traded(ohlcv.iloc[0:0], _actions([])).empty
+
+
+def test_reconstruct_four_to_one_split_recovers_as_traded():
+    """AAPL-style 4:1 split: pre-split prices x4, post-split untouched, ex-date untouched."""
+    df = make_ohlcv(n=40, with_lineage=False)
+    dates = df["date"]
+    ex = dates.iloc[20]
+    vendor_close = df["close"].to_numpy()  # yfinance already split-adjusted
+    ohlcv = _raw_ohlcv(dates, vendor_close, volume=4_000_000)
+    out = reconstruct_as_traded(ohlcv, _actions([("TEST", ex, "split", 4.0)]))
+
+    pre = out["date"] < ex
+    post = out["date"] >= ex  # ex-date row is already post-split -> NOT un-adjusted
+    # pre-split close multiplied back by 4 (recover as-traded tape price)
+    assert np.allclose(out.loc[pre, "close"], vendor_close[pre.to_numpy()] * 4.0)
+    # post-split (incl. ex-date) unchanged
+    assert np.allclose(out.loc[post, "close"], vendor_close[post.to_numpy()])
+    # volume divided back by 4 pre-split, unchanged post
+    assert np.allclose(out.loc[pre, "volume"], 4_000_000 / 4.0)
+    assert np.allclose(out.loc[post, "volume"], 4_000_000)
+
+
+def test_reconstruct_is_exact_inverse_of_split_factor():
+    """The core invariant: future_mult * downstream split_factor == 1 everywhere.
+
+    reconstruct_as_traded (provider) and compute_adjustment_factors (curation)
+    must use the SAME dedup and the SAME side='right' convention, so that
+    ohlcv_daily_adj re-derives the continuous vendor series with no double-adjust.
+    """
+    df = make_ohlcv(n=60, with_lineage=False)
+    dates = df["date"]
+    vendor_close = df["close"].to_numpy()
+    ohlcv = _raw_ohlcv(dates, vendor_close)
+    actions = _actions([("TEST", dates.iloc[30], "split", 4.0)])
+
+    as_traded = reconstruct_as_traded(ohlcv, actions)
+    factors = compute_adjustment_factors(as_traded, actions).set_index("date")
+    # applying split_factor to the reconstructed as-traded close must give back
+    # exactly the vendor's split-adjusted close we started from
+    readjusted = as_traded["close"].to_numpy() * factors["split_factor"].to_numpy()
+    assert np.allclose(readjusted, vendor_close)
+
+
+def test_reconstruct_dedups_vendor_duplicated_split():
+    """Samsung-style 50:1 emitted twice within the window collapses to a single 50x.
+
+    A naive implementation would multiply pre-split prices by 50*50 = 2500.
+    reconstruct_as_traded must reuse _dedup_splits and apply a single 50x.
+    """
+    df = make_ohlcv(n=60, with_lineage=False)
+    dates = df["date"]
+    ex1 = dates.iloc[30]
+    ex2 = dates.iloc[35]  # ~5 sessions later, identical ratio -> duplicate
+    vendor_close = df["close"].to_numpy()
+    ohlcv = _raw_ohlcv(dates, vendor_close)
+    out = reconstruct_as_traded(
+        ohlcv, _actions([("TEST", ex1, "split", 50.0), ("TEST", ex2, "split", 50.0)])
+    )
+    pre = out["date"] < ex1
+    # exactly 50x, never 2500x
+    assert np.allclose(out.loc[pre, "close"], vendor_close[pre.to_numpy()] * 50.0)
+    assert np.allclose(out.loc[~pre.to_numpy(), "close"], vendor_close[(~pre).to_numpy()])
