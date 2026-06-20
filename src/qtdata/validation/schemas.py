@@ -60,7 +60,10 @@ NEWS_ARTICLES_SCHEMA = pa.DataFrameSchema(
 NEWS_TICKER_SCHEMA = pa.DataFrameSchema(
     columns={
         "article_id": pa.Column(str, pa.Check.str_matches(r"^[0-9a-f]{64}$")),
-        "ticker": pa.Column(str, pa.Check.str_length(1, 6)),
+        # str_length up to 12 to accommodate market suffixes (e.g. "005930.KS",
+        # "247540.KQ", "2513.HK"). NASDAQ symbols are <=6; foreign tickers carry a
+        # ".XX" / ".XXX" exchange suffix and would otherwise be wrongly quarantined.
+        "ticker": pa.Column(str, pa.Check.str_length(1, 12)),
         "published_at": pa.Column(pd.DatetimeTZDtype(tz="UTC")),
         "ingested_at": pa.Column(pd.DatetimeTZDtype(tz="UTC")),
         "relevance": pa.Column(float, pa.Check.in_range(0.0, 1.0), nullable=True),

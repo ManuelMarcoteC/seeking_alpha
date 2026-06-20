@@ -8,7 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qtdata.news.aggregate import build_sentiment_daily, trading_day_for
+from qtdata.news.aggregate import (
+    build_sentiment_daily,
+    market_for_ticker,
+    trading_day_for,
+)
 from qtdata.news.curate import curate_news
 from qtdata.news.ingest import ingest_news
 from qtdata.providers.alpha_vantage_news import parse_feed
@@ -49,6 +53,44 @@ class TestTradingDayFor:
         ingested = _ts("2026-06-09 10:00")
         effective = max(published, ingested)
         assert trading_day_for(effective) == pd.Timestamp("2026-06-09")
+
+
+class TestMarketForTicker:
+    def test_us_ticker_gets_default_market(self):
+        assert market_for_ticker("AAPL") == ("America/New_York", "XNYS", "15:30")
+
+    def test_hong_kong_suffix(self):
+        assert market_for_ticker("2513.HK") == ("Asia/Hong_Kong", "XHKG", "15:30")
+
+    def test_korea_suffixes(self):
+        assert market_for_ticker("005930.KS") == ("Asia/Seoul", "XKRX", "15:00")
+        assert market_for_ticker("247540.KQ") == ("Asia/Seoul", "XKRX", "15:00")
+
+    def test_case_insensitive(self):
+        assert market_for_ticker("2513.hk")[1] == "XHKG"
+
+
+class TestPerMarketAttribution:
+    def test_hk_news_attributed_to_hk_session_not_ny(self):
+        # A Zhipu (2513.HK) headline timestamped 2026-06-15 10:00 Hong Kong time.
+        # In HKT that is during Monday's SEHK session, well before the 15:30 cutoff
+        # -> must attribute to Monday 2026-06-15 (XHKG), NOT bucket it via NY tz.
+        hkt = pd.Timestamp("2026-06-15 10:00", tz="Asia/Hong_Kong").tz_convert("UTC")
+        tz, calendar, cutoff = market_for_ticker("2513.HK")
+        assert trading_day_for(hkt, cutoff, calendar, tz) == pd.Timestamp("2026-06-15")
+
+    def test_same_instant_buckets_differently_per_market(self):
+        # US Independence Day holiday: observed Fri 2026-07-03 (XNYS closed).
+        # An instant that is Fri 2026-07-03 10:00 in Hong Kong (a normal SEHK
+        # session) is 2026-07-02 22:00 ET. HK -> Fri 03 (its own session); the US
+        # default skips the holiday -> Mon 2026-07-06. Same instant, different day.
+        ts = pd.Timestamp("2026-07-03 10:00", tz="Asia/Hong_Kong").tz_convert("UTC")
+        hk_tz, hk_cal, hk_cut = market_for_ticker("2513.HK")
+        hk_day = trading_day_for(ts, hk_cut, hk_cal, hk_tz)
+        us_day = trading_day_for(ts)  # default NY/XNYS
+        assert hk_day == pd.Timestamp("2026-07-03")
+        assert us_day == pd.Timestamp("2026-07-06")
+        assert us_day != hk_day  # same instant, different market session
 
 
 def test_build_sentiment_daily_weighted_mean(settings, catalog, monkeypatch):
