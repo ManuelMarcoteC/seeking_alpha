@@ -30,6 +30,32 @@ logger = logging.getLogger(__name__)
 
 NY_TZ = "America/New_York"
 
+# Per-market attribution: a foreign ticker's news must be bucketed against its
+# OWN exchange session, in its OWN timezone, with a cutoff relative to its OWN
+# close. Keyed by ticker suffix; the default (no suffix = NASDAQ/US) preserves
+# the original NY_TZ / XNYS / 15:30 behaviour exactly, so the US path is unchanged.
+# (tz, calendar, cutoff_local) — cutoff ~30 min before each market's local close.
+_MARKET_BY_SUFFIX: dict[str, tuple[str, str, str]] = {
+    ".HK": ("Asia/Hong_Kong", "XHKG", "15:30"),  # SEHK closes 16:00 HKT
+    ".KS": ("Asia/Seoul", "XKRX", "15:00"),       # KOSPI closes 15:30 KST
+    ".KQ": ("Asia/Seoul", "XKRX", "15:00"),       # KOSDAQ closes 15:30 KST
+}
+_DEFAULT_MARKET: tuple[str, str, str] = (NY_TZ, "XNYS", "15:30")
+
+
+def market_for_ticker(ticker: str) -> tuple[str, str, str]:
+    """Resolve (tz, calendar, cutoff_local) from a ticker's market suffix.
+
+    No recognized suffix -> the US default (NY_TZ, XNYS, 15:30), so every NASDAQ
+    ticker keeps its exact prior attribution. Foreign suffixes (.HK/.KS/.KQ) get
+    their own market's timezone, calendar, and local cutoff.
+    """
+    up = ticker.upper()
+    for suffix, market in _MARKET_BY_SUFFIX.items():
+        if up.endswith(suffix):
+            return market
+    return _DEFAULT_MARKET
+
 
 def _parse_cutoff(cutoff_local: str) -> time:
     hour, minute = cutoff_local.split(":")
@@ -40,9 +66,14 @@ def trading_day_for(
     effective_ts_utc: pd.Timestamp,
     cutoff_local: str = "15:30",
     calendar: str = "XNYS",
+    tz: str = NY_TZ,
 ) -> pd.Timestamp:
-    """Map an effective timestamp to the first session that could trade on it."""
-    local = effective_ts_utc.tz_convert(NY_TZ)
+    """Map an effective timestamp to the first session that could trade on it.
+
+    `tz` is the market-local timezone the cutoff is expressed in. Defaults to
+    NY_TZ so existing US callers are unaffected; foreign markets pass their own.
+    """
+    local = effective_ts_utc.tz_convert(tz)
     local_date = local.date()
     cutoff = _parse_cutoff(cutoff_local)
     if calendars.is_session(local_date, calendar) and local.time() <= cutoff:
@@ -62,12 +93,30 @@ def build_sentiment_daily(
     rows["published_at"] = pd.to_datetime(rows["published_at"], utc=True)
     rows["ingested_at"] = pd.to_datetime(rows["ingested_at"], utc=True)
     effective = rows[["published_at", "ingested_at"]].max(axis=1)
+    rows["effective_ts"] = effective
 
-    cutoff = settings.news_cutoff_local
-    calendar = settings.default_calendar
-    unique_ts = effective.drop_duplicates()
-    mapping = {ts: trading_day_for(ts, cutoff, calendar) for ts in unique_ts}
-    rows["date"] = effective.map(mapping)
+    # Per-market attribution: resolve (tz, calendar, cutoff) from each ticker's
+    # suffix, then map its effective_ts to its OWN market's session. NASDAQ
+    # tickers fall through to the US default, so their attribution is unchanged.
+    # The US-configured cutoff (settings) still overrides the US default cutoff.
+    us_cutoff = settings.news_cutoff_local
+    cache: dict[tuple[str, pd.Timestamp], pd.Timestamp] = {}
+
+    def _attribute(ticker: str, ts: pd.Timestamp) -> pd.Timestamp:
+        key = (ticker.upper(), ts)
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        tz, calendar, cutoff = market_for_ticker(ticker)
+        if (tz, calendar) == _DEFAULT_MARKET[:2]:
+            cutoff = us_cutoff  # honour the US-configured cutoff for NASDAQ
+        day = trading_day_for(ts, cutoff, calendar, tz)
+        cache[key] = day
+        return day
+
+    rows["date"] = [
+        _attribute(t, ts) for t, ts in zip(rows["ticker"], effective, strict=True)
+    ]
 
     # relevance floor; null relevance (yfinance harvester) weights 1.0 — documented
     weight = rows["relevance"].astype(float).fillna(1.0)

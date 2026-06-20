@@ -65,3 +65,31 @@ def test_actions_schema_rejects_unknown_type():
     valid, failures = validate_frame(df, ACTIONS_SCHEMA)
     assert valid.empty
     assert not failures.empty
+
+
+def _news_ticker_row(ticker: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "article_id": ["a" * 64],
+            "ticker": [ticker],
+            "published_at": [pd.Timestamp.now(tz="UTC")],
+            "ingested_at": [pd.Timestamp.now(tz="UTC")],
+            "relevance": [0.5],
+            "score_av": [None],
+            "score_finbert": [None],
+            "finbert_revision": [None],
+            "scored_at": [pd.NaT],
+            "run_id": ["r"],
+        }
+    )
+
+
+@pytest.mark.parametrize("ticker", ["AAPL", "2513.HK", "0100.HK", "005930.KS", "247540.KQ"])
+def test_news_ticker_schema_accepts_market_suffixes(ticker):
+    # Foreign tickers carry a market suffix (.HK/.KS/.KQ) and exceed 6 chars;
+    # the schema must NOT quarantine them (regression: str_length was (1,6)).
+    from qtdata.validation.schemas import NEWS_TICKER_SCHEMA
+
+    valid, failures = validate_frame(_news_ticker_row(ticker), NEWS_TICKER_SCHEMA)
+    assert len(valid) == 1, f"{ticker} was wrongly quarantined: {failures.to_dict()}"
+    assert failures.empty

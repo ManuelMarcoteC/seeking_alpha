@@ -561,6 +561,33 @@ def research_sentiment_ic(
     console.print(f"[green]Informe: {report.path}[/green]")
 
 
+@research_app.command("aiasia")
+def research_aiasia(
+    tickers: str = typer.Option(
+        None, help="Comma-separated basket override; default = curated AI-Asia seed"
+    ),
+) -> None:
+    """Descriptive AI-Asia basket characterization (momentum + relative strength
+    + sentiment overlay). Read-only; N/A where history is too short. NOT a signal."""
+    from qtdata.research.aiasia import (
+        DEFAULT_BASKET,
+        build_basket_report,
+        render_basket_table,
+    )
+
+    settings = get_settings()
+    basket = (
+        tuple(t.strip().upper() for t in tickers.split(",") if t.strip())
+        if tickers
+        else DEFAULT_BASKET
+    )
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        cat.refresh_views()
+        report = build_basket_report(cat, basket)
+    console.print(render_basket_table(report))
+
+
 @app.command()
 def status() -> None:
     """Watermarks, recent ingestion runs and flag counts."""
