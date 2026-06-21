@@ -71,6 +71,10 @@ class Catalog:
 
     def close(self) -> None:
         try:
+            try:
+                self.conn.execute("CHECKPOINT")  # flush WAL into the main db file
+            except Exception:  # noqa: BLE001 — read-only conn / nothing to flush
+                pass
             self.conn.close()
         except Exception:  # noqa: BLE001 — double-close is a no-op
             pass

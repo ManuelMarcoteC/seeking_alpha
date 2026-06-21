@@ -75,6 +75,11 @@ def _print_ingest_summary(s: IngestSummary) -> None:
         console.print(f"  [red]FAILED[/red] {ticker}/{ds}: {err}")
     if len(s.failures) > 10:
         console.print(f"  ... and {len(s.failures) - 10} more failures (see manifest)")
+    if getattr(s, "interrupted", False):
+        console.print(
+            "[yellow]Interrumpido por SIGTERM: progreso commiteado por watermark. "
+            "Re-lanza el mismo comando para reanudar.[/yellow]"
+        )
 
 
 @app.command()
@@ -160,6 +165,8 @@ def ingest(
             full_refresh=full_refresh,
         )
     _print_ingest_summary(summary)
+    if summary.interrupted:
+        raise typer.Exit(143)
 
 
 @news_app.command("ingest")
