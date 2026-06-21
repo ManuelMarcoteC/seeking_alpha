@@ -25,6 +25,7 @@ import pandas as pd
 from qtdata import calendars
 from qtdata.config import Settings
 from qtdata.ingestion.manifest import ManifestEntry, record_fetch
+from qtdata.ingestion.shutdown import terminable
 from qtdata.ingestion.watermarks import get_watermark, set_watermark
 from qtdata.models import Dataset
 from qtdata.providers import get_provider
@@ -57,6 +58,7 @@ class IngestSummary:
     skipped: int = 0
     failed: int = 0
     rows: int = 0
+    interrupted: bool = False
     failures: list[tuple[str, str, str]] = field(default_factory=list)  # ticker, dataset, error
 
 
@@ -179,8 +181,12 @@ def _ingest_per_ticker(
     end: date,
     run_id: str,
     summary: IngestSummary,
+    guard=None,
 ) -> None:
     for ticker, per_dataset in plan.items():
+        if guard is not None and guard.should_stop:
+            summary.interrupted = True
+            return
         for dataset, eff_start in per_dataset.items():
             started_at = datetime.now(UTC)
             try:
@@ -208,6 +214,7 @@ def _ingest_batched(
     end: date,
     run_id: str,
     summary: IngestSummary,
+    guard=None,
 ) -> None:
     """Group tickers by identical effective-start signature and batch-fetch each group."""
     groups: dict[tuple, list[str]] = defaultdict(list)
@@ -216,6 +223,9 @@ def _ingest_batched(
         groups[signature].append(ticker)
 
     for tickers in groups.values():
+        if guard is not None and guard.should_stop:
+            summary.interrupted = True
+            return
         per_dataset = plan[tickers[0]]
         batch_start = min(per_dataset.values())
         started_at = datetime.now(UTC)
@@ -227,12 +237,15 @@ def _ingest_batched(
             )
             _ingest_per_ticker(
                 settings, catalog, provider,
-                {t: plan[t] for t in tickers}, end, run_id, summary,
+                {t: plan[t] for t in tickers}, end, run_id, summary, guard=guard,
             )
             continue
 
         empty_result_cache: dict[Dataset, FetchResult] = {}
         for ticker in tickers:
+            if guard is not None and guard.should_stop:
+                summary.interrupted = True
+                return
             ticker_results = results.get(ticker, {})
             for dataset, eff_start in per_dataset.items():
                 result = ticker_results.get(dataset)
@@ -299,8 +312,9 @@ def ingest(
     if not plan:
         return summary
 
-    if isinstance(provider, BatchFetchProtocol) and len(plan) > 1:
-        _ingest_batched(settings, catalog, provider, plan, end, run_id, summary)
-    else:
-        _ingest_per_ticker(settings, catalog, provider, plan, end, run_id, summary)
+    with terminable(raise_on_signal=False) as guard:
+        if isinstance(provider, BatchFetchProtocol) and len(plan) > 1:
+            _ingest_batched(settings, catalog, provider, plan, end, run_id, summary, guard=guard)
+        else:
+            _ingest_per_ticker(settings, catalog, provider, plan, end, run_id, summary, guard=guard)
     return summary

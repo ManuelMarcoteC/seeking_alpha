@@ -71,3 +71,24 @@ def test_ingest_requires_tickers_or_universe():
     runner.invoke(cli.app, ["init"])
     result = runner.invoke(cli.app, ["ingest"])
     assert result.exit_code == 1
+
+
+def test_ingest_exits_143_when_interrupted(isolated_settings, monkeypatch):
+    from qtdata.ingestion.ingest import IngestSummary
+
+    interrupted = IngestSummary(run_id="deadbeef", ok=5, rows=100, interrupted=True)
+    monkeypatch.setattr(cli, "run_ingest", lambda *a, **k: interrupted)
+    runner.invoke(cli.app, ["init"])
+    result = runner.invoke(cli.app, ["ingest", "--tickers", "AAA", "--provider", "synthetic"])
+    assert result.exit_code == 143
+    assert "SIGTERM" in result.output
+
+
+def test_ingest_exit_0_when_complete(isolated_settings, monkeypatch):
+    from qtdata.ingestion.ingest import IngestSummary
+
+    done = IngestSummary(run_id="cafebabe", ok=3, rows=60, interrupted=False)
+    monkeypatch.setattr(cli, "run_ingest", lambda *a, **k: done)
+    runner.invoke(cli.app, ["init"])
+    result = runner.invoke(cli.app, ["ingest", "--tickers", "AAA", "--provider", "synthetic"])
+    assert result.exit_code == 0, result.output
