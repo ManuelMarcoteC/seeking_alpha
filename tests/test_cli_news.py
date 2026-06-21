@@ -127,3 +127,27 @@ def test_news_update_loop_via_cli(isolated_settings, monkeypatch):
     daily = parquet_store.read(isolated_settings.curated_dir / "sentiment_daily")
     assert "AAPL" in set(daily["ticker"])
     assert pd.isna(daily[daily["ticker"] == "AAPL"].iloc[0]["sent_finbert"])
+
+
+def test_build_factor_dedup_flag_overrides_setting(isolated_settings, monkeypatch):
+    captured = {}
+
+    def _fake_build(settings, cat, since=None):
+        captured["enabled"] = settings.news_dedup_enabled
+        return 0
+
+    monkeypatch.setattr("qtdata.news.aggregate.build_sentiment_daily", _fake_build)
+    runner.invoke(cli.app, ["init"])
+
+    result = runner.invoke(cli.app, ["news", "build-factor", "--dedup"])
+    assert result.exit_code == 0, result.output
+    assert captured["enabled"] is True
+
+    result = runner.invoke(cli.app, ["news", "build-factor", "--no-dedup"])
+    assert result.exit_code == 0, result.output
+    assert captured["enabled"] is False
+
+    # flag omitido -> respeta el default de settings (OFF)
+    result = runner.invoke(cli.app, ["news", "build-factor"])
+    assert result.exit_code == 0, result.output
+    assert captured["enabled"] is False

@@ -31,3 +31,17 @@ def test_api_key_is_secret(monkeypatch):
     s = Settings(_env_file=None)
     assert "sekret" not in repr(s)
     assert s.alpha_vantage_api_key.get_secret_value() == "sekret"
+
+
+def test_news_dedup_defaults_off():
+    s = Settings(_env_file=None)
+    assert s.news_dedup_enabled is False
+    assert s.news_dedup_threshold == 0.5
+
+
+def test_news_dedup_env_override(monkeypatch):
+    monkeypatch.setenv("QT_NEWS_DEDUP_ENABLED", "true")
+    monkeypatch.setenv("QT_NEWS_DEDUP_THRESHOLD", "0.6")
+    s = Settings(_env_file=None)
+    assert s.news_dedup_enabled is True
+    assert s.news_dedup_threshold == 0.6

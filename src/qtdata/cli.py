@@ -244,11 +244,18 @@ def news_score(
 @news_app.command("build-factor")
 def news_build_factor(
     since: str = typer.Option(None, help="Only rebuild (ticker, day) rows from this ISO date"),
+    dedup: bool = typer.Option(
+        None,
+        "--dedup/--no-dedup",
+        help="Collapse syndicated duplicate headlines (overrides QT_NEWS_DEDUP_ENABLED)",
+    ),
 ) -> None:
     """(Re)build the daily sentiment factor `sentiment_daily`."""
     from qtdata.news.aggregate import build_sentiment_daily
 
     settings = get_settings()
+    if dedup is not None:
+        settings = settings.model_copy(update={"news_dedup_enabled": dedup})
     with Catalog(settings) as cat:
         cat.init_schema()
         n = build_sentiment_daily(

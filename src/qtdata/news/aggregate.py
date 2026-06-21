@@ -23,6 +23,7 @@ import pandas as pd
 from qtdata import calendars
 from qtdata.config import Settings
 from qtdata.models import SENTIMENT_DAILY_KEY
+from qtdata.news import dedup
 from qtdata.storage import parquet_store
 from qtdata.storage.catalog import Catalog
 
@@ -81,6 +82,44 @@ def trading_day_for(
     return calendars.next_session(local_date, calendar)
 
 
+def _collapse_syndicated(settings: Settings, rows: pd.DataFrame) -> pd.DataFrame:
+    """Collapse syndicated near-duplicates within each (ticker, date) bucket.
+
+    Keeps ONE representative row per detected event: the highest weight/relevance,
+    breaking ties by the earliest effective_ts (the first copy observed). Buckets
+    of a single row pass through untouched. Headlines come from `news_articles`
+    (read ONCE here, not per group); a missing/empty title maps to "" — several
+    empty titles in the same bucket collapse together, which is acceptable.
+    """
+    titles = parquet_store.read(
+        settings.curated_dir / "news_articles", columns=["article_id", "title"]
+    )
+    if titles.empty:
+        title_by_id: dict[str, str] = {}
+    else:
+        title_by_id = dict(zip(titles["article_id"], titles["title"], strict=True))
+
+    keep_index: list = []
+    for _, group in rows.groupby(["ticker", "date"], sort=False):
+        if len(group) == 1:
+            keep_index.extend(group.index.tolist())
+            continue
+        group_titles = [
+            title_by_id.get(aid, "") or "" for aid in group["article_id"]
+        ]
+        event_ids = dedup.assign_event_ids(
+            group_titles, threshold=settings.news_dedup_threshold
+        )
+        ordered = (
+            group.assign(_event=event_ids)
+            .sort_values(["weight", "effective_ts"], ascending=[False, True])
+            .drop_duplicates(subset="_event", keep="first")
+        )
+        keep_index.extend(ordered.index.tolist())
+
+    return rows.loc[keep_index]
+
+
 def build_sentiment_daily(
     settings: Settings, catalog: Catalog, since: date | None = None
 ) -> int:
@@ -127,6 +166,17 @@ def build_sentiment_daily(
 
     if since is not None:
         rows = rows[rows["date"] >= pd.Timestamp(since)]
+        if rows.empty:
+            return 0
+
+    # Syndicated-duplicate collapse (default OFF). Within each (ticker, date)
+    # bucket, near-duplicate headlines (token-set Jaccard >= threshold) are
+    # collapsed to a single representative BEFORE aggregation, so n_articles
+    # counts EVENTS rather than syndicated copies. With dedup disabled this
+    # block is skipped entirely and the path above is byte-for-byte the legacy
+    # behaviour — hence default OFF cannot change any existing factor value.
+    if settings.news_dedup_enabled:
+        rows = _collapse_syndicated(settings, rows)
         if rows.empty:
             return 0
 
