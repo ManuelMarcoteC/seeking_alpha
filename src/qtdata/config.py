@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     av_news_page_limit: int = 23
     finbert_revision: str = "4556d13015211d73dccd3fdd39d39232506f3e43"
 
+    # news / sentiment — syndicated dedup (opt-in; default OFF preserves factor)
+    news_dedup_enabled: bool = False
+    news_dedup_threshold: float = 0.5
+
     reconcile_price_rel_tol: float = 0.005
     reconcile_volume_rel_tol: float = 0.10
 

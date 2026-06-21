@@ -173,3 +173,66 @@ def test_rebuild_is_idempotent(settings, catalog, monkeypatch):
         first.drop(columns=["built_at"]).sort_values(["ticker"]).reset_index(drop=True),
         second.drop(columns=["built_at"]).sort_values(["ticker"]).reset_index(drop=True),
     )
+
+
+def test_dedup_collapses_syndicated_copies(settings, catalog, monkeypatch):
+    feed = [
+        {"title": "Apple drone delivery trial near Hormuz hub", "url": "https://x/1",
+         "time_published": "20260610T120000", "source": "s1", "summary": "",
+         "overall_sentiment_score": 0.0,
+         "ticker_sentiment": [{"ticker": "AAPL", "relevance_score": "0.9",
+                               "ticker_sentiment_score": "0.6"}]},
+        {"title": "Apple UAV delivery trial over Strait of Hormuz", "url": "https://x/2",
+         "time_published": "20260610T121500", "source": "s2", "summary": "",
+         "overall_sentiment_score": 0.0,
+         "ticker_sentiment": [{"ticker": "AAPL", "relevance_score": "0.8",
+                               "ticker_sentiment_score": "0.6"}]},
+        {"title": "Apple drones trial near Hormuz hub", "url": "https://x/3",
+         "time_published": "20260610T123000", "source": "s3", "summary": "",
+         "overall_sentiment_score": 0.0,
+         "ticker_sentiment": [{"ticker": "AAPL", "relevance_score": "0.7",
+                               "ticker_sentiment_score": "0.6"}]},
+        {"title": "Apple beats Q3 earnings estimates", "url": "https://x/4",
+         "time_published": "20260610T130000", "source": "s4", "summary": "",
+         "overall_sentiment_score": 0.0,
+         "ticker_sentiment": [{"ticker": "AAPL", "relevance_score": "0.5",
+                               "ticker_sentiment_score": "-0.2"}]},
+    ]
+    monkeypatch.setattr(
+        "qtdata.providers.alpha_vantage_news.AlphaVantageNewsProvider.fetch_news_day",
+        lambda self, day, page_limit: (parse_feed(feed), 1),
+    )
+    settings.news_dedup_enabled = True
+    settings.news_dedup_threshold = 0.5
+    ingest_news(settings, catalog, date_from=date(2026, 6, 10), date_to=date(2026, 6, 10))
+    curate_news(settings, catalog)
+    build_sentiment_daily(settings, catalog)
+    daily = parquet_store.read(settings.curated_dir / "sentiment_daily")
+    aapl = daily[daily["ticker"] == "AAPL"].iloc[0]
+    assert aapl["n_articles"] == 2  # 3 copias sindicadas -> 1 evento + earnings = 2
+
+
+def test_dedup_off_preserves_legacy_count(settings, catalog, monkeypatch):
+    feed = [
+        {"title": "Apple drone delivery trial near Hormuz hub", "url": "https://x/1",
+         "time_published": "20260610T120000", "source": "s1", "summary": "",
+         "overall_sentiment_score": 0.0,
+         "ticker_sentiment": [{"ticker": "AAPL", "relevance_score": "0.9",
+                               "ticker_sentiment_score": "0.6"}]},
+        {"title": "Apple UAV delivery test over Strait of Hormuz", "url": "https://x/2",
+         "time_published": "20260610T121500", "source": "s2", "summary": "",
+         "overall_sentiment_score": 0.0,
+         "ticker_sentiment": [{"ticker": "AAPL", "relevance_score": "0.8",
+                               "ticker_sentiment_score": "0.6"}]},
+    ]
+    monkeypatch.setattr(
+        "qtdata.providers.alpha_vantage_news.AlphaVantageNewsProvider.fetch_news_day",
+        lambda self, day, page_limit: (parse_feed(feed), 1),
+    )
+    settings.news_dedup_enabled = False
+    ingest_news(settings, catalog, date_from=date(2026, 6, 10), date_to=date(2026, 6, 10))
+    curate_news(settings, catalog)
+    build_sentiment_daily(settings, catalog)
+    daily = parquet_store.read(settings.curated_dir / "sentiment_daily")
+    aapl = daily[daily["ticker"] == "AAPL"].iloc[0]
+    assert aapl["n_articles"] == 2  # ambas contadas (sin colapsar)
