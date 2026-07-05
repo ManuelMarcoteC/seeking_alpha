@@ -20,12 +20,15 @@ class Settings(BaseSettings):
     default_universe: str = "NASDAQ"
 
     nasdaq_listed_url: str = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt"
+    other_listed_url: str = "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt"
 
     alpha_vantage_api_key: SecretStr | None = None
     alpha_vantage_rate_limit_per_min: int = 5
     yfinance_rate_limit_per_min: int = 60
     yfinance_batch_size: int = 200
     yfinance_batch_threads: int = 8
+    eodhd_api_key: SecretStr | None = None
+    eodhd_rate_limit_per_min: int = 60
 
     # agent layer
     anthropic_api_key: SecretStr | None = None  # falls back to ANTHROPIC_API_KEY
@@ -52,7 +55,7 @@ class Settings(BaseSettings):
     mad_threshold: float = 8.0
     gap_threshold: float = 0.30
 
-    @field_validator("alpha_vantage_api_key", "anthropic_api_key", mode="before")
+    @field_validator("alpha_vantage_api_key", "anthropic_api_key", "eodhd_api_key", mode="before")
     @classmethod
     def _empty_key_is_none(cls, v: object) -> object:
         return None if v in ("", None) else v

@@ -134,6 +134,67 @@ def universe_refresh(
         console.print(f"[yellow]{INITIAL_SNAPSHOT_NOTE}[/yellow]")
 
 
+@universe_app.command("refresh-other")
+def universe_refresh_other(
+    exchanges: str = typer.Option(
+        "N,P,A,Z", help="Exchange codes to refresh (N=NYSE, P=Arca, A=Amex, Z=Cboe)"
+    ),
+    as_of: str = typer.Option(None, help="ISO date; default = today"),
+) -> None:
+    """Refresh NYSE/ARCA/AMEX/CBOE rosters from otherlisted.txt (forward-PIT, B0)."""
+    from qtdata.other_directory import EXCHANGE_ROSTERS, refresh_other
+
+    settings = get_settings()
+    codes = tuple(c.strip().upper() for c in exchanges.split(",") if c.strip())
+    unknown = [c for c in codes if c not in EXCHANGE_ROSTERS]
+    if unknown:
+        console.print(f"[red]Unknown exchange codes: {unknown} (valid: N,P,A,Z)[/red]")
+        raise typer.Exit(1)
+    summary = refresh_other(
+        settings,
+        as_of=date.fromisoformat(as_of) if as_of else None,
+        exchanges=codes,
+    )
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        cat.refresh_views()
+    console.print(f"directory rows={summary.directory_rows}")
+    for roster, s in summary.per_roster.items():
+        console.print(
+            f"[green]{roster} as of {summary.as_of}: {s['common']} common stocks, "
+            f"+{s['added']} / -{s['removed']} (unchanged {s['unchanged']})[/green]"
+        )
+
+
+@universe_app.command("security-master")
+def universe_security_master(
+    universe: str = typer.Option(None, help="Fetch GICS for members of this universe"),
+    tickers: str = typer.Option(None, help="Comma-separated tickers (overrides --universe)"),
+    as_of: str = typer.Option(None, help="ISO date; default = today"),
+) -> None:
+    """Fetch GICS 4-level classification (EODHD fundamentals) into security_master (B0)."""
+    from qtdata.security_master import refresh_security_master
+
+    settings = get_settings()
+    symbols = _resolve_tickers(settings, tickers, universe)
+    coverage = refresh_security_master(
+        settings, symbols, as_of=date.fromisoformat(as_of) if as_of else None
+    )
+    with Catalog(settings) as cat:
+        cat.init_schema()
+        cat.refresh_views()
+    pct = 100.0 * coverage["with_gics"] / max(coverage["requested"], 1)
+    color = "green" if pct > 95.0 else "yellow"
+    console.print(
+        f"[{color}]security_master: {coverage['requested']} requested, "
+        f"{coverage['with_gics']} with GICS ({pct:.1f}%), "
+        f"{coverage['gics_missing']} missing, {coverage['http_errors']} errors, "
+        f"{coverage['rows_written']} rows written[/{color}]"
+    )
+    if pct <= 95.0:
+        console.print("[yellow]B0 acceptance gate is >95% GICS coverage.[/yellow]")
+
+
 @app.command()
 def ingest(
     tickers: str = typer.Option(None, help="Comma-separated tickers"),
